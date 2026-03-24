@@ -1008,7 +1008,7 @@ async function ghlFetch(path, options = {}) {
     ...options,
     headers: {
       // Pass the key to the proxy via a custom header.
-      // The proxy adds 'Authorization: Bearer ...' before forwarding to GHL,
+      // The proxy adds 'Authorization: Bearer ...' and 'Version' before forwarding to GHL v2,
       // keeping the real key out of direct browser-to-GHL requests.
       'X-GHL-Api-Key': ghlConfig.apiKey,
       'Content-Type': 'application/json',
@@ -1018,7 +1018,7 @@ async function ghlFetch(path, options = {}) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = {}; }
-  if (!res.ok) throw new Error(data.message || data.msg || `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(data.message || data.msg || data.error || `HTTP ${res.status}`);
   return data;
 }
 
@@ -1030,13 +1030,15 @@ async function connectGHL() {
   const locationId = document.getElementById('ghl-location-input').value.trim();
   const calendarLink = document.getElementById('ghl-calendar-input').value.trim();
   if (!apiKey) { showGHLError('Please enter your GHL API key.'); return; }
+  if (!locationId) { showGHLError('Location ID is required for GHL v2 API. Find it in Sub-Account Settings → Business Info.'); return; }
   ghlConfig.apiKey = apiKey;
   ghlConfig.locationId = locationId;
   ghlConfig.calendarLink = calendarLink;
   showGHLError('');
   document.getElementById('ghl-connecting').style.display = 'flex';
   try {
-    const data = await ghlFetch('/pipelines/');
+    // GHL v2: pipelines endpoint requires locationId as a query parameter
+    const data = await ghlFetch(`/opportunities/pipelines?locationId=${encodeURIComponent(locationId)}`);
     pipelines = data.pipelines || [];
     document.getElementById('ghl-connecting').style.display = 'none';
     if (pipelines.length === 0) {
@@ -1136,18 +1138,18 @@ async function pushLeadToGHL(lead) {
   renderTable();
   try {
     const nameParts = (lead.name || '').trim().split(/\s+/);
-    const payload = { firstName: nameParts[0] || lead.name, lastName: nameParts.slice(1).join(' ') || '', tags: [lead.category, 'auto-pipeline'], source: 'Lead Pipeline CRM' };
+    // GHL v2: locationId is required in the contact payload
+    const payload = { firstName: nameParts[0] || lead.name, lastName: nameParts.slice(1).join(' ') || '', tags: [lead.category, 'auto-pipeline'], source: 'Lead Pipeline CRM', locationId: ghlConfig.locationId };
     if (lead.phone && lead.phone !== '—') payload.phone = lead.phone;
     if (lead.email && lead.email !== '—') payload.email = lead.email;
     if (lead.address && lead.address !== '—') payload.address1 = lead.address;
-    if (ghlConfig.locationId) payload.locationId = ghlConfig.locationId;
     const contactData = await ghlFetch('/contacts/', { method: 'POST', body: JSON.stringify(payload) });
     lead.ghlContactId = contactData.contact?.id || contactData.id;
     if (ghlConfig.pipelineId && lead.ghlContactId) {
       const stageId = ghlConfig.stages['New'] || ghlConfig.stages['New Lead'] || Object.values(ghlConfig.stages)[0];
-      const oppPayload = { pipelineId: ghlConfig.pipelineId, name: `${lead.name} — ${lead.category}`, status: 'open', contactId: lead.ghlContactId };
+      // GHL v2: locationId is required for opportunity creation
+      const oppPayload = { pipelineId: ghlConfig.pipelineId, name: `${lead.name} — ${lead.category}`, status: 'open', contactId: lead.ghlContactId, locationId: ghlConfig.locationId };
       if (stageId) oppPayload.pipelineStageId = stageId;
-      if (ghlConfig.locationId) oppPayload.locationId = ghlConfig.locationId;
       const oppData = await ghlFetch('/opportunities/', { method: 'POST', body: JSON.stringify(oppPayload) });
       lead.ghlOpportunityId = oppData.opportunity?.id || oppData.id;
     }
@@ -1176,7 +1178,8 @@ async function syncStatusToGHL(lead) {
   const stageId = ghlConfig.stages[lead.status] || null;
   if (!stageId) return;
   try {
-    await ghlFetch(`/opportunities/${lead.ghlOpportunityId}/status`, { method: 'PUT', body: JSON.stringify({ stageId }) });
+    // GHL v2: update stage via PUT on the opportunity itself with pipelineStageId
+    await ghlFetch(`/opportunities/${lead.ghlOpportunityId}`, { method: 'PUT', body: JSON.stringify({ pipelineStageId: stageId }) });
     logActivity(lead.id, 'GHL Stage Update', `${lead.name} → "${lead.status}" synced in GHL`);
   } catch (e) { console.warn('Stage sync failed:', e.message); }
 }
@@ -1187,7 +1190,7 @@ async function syncStatusToGHL(lead) {
 async function pullLeadActivity(lead) {
   if (!lead.ghlContactId || !ghlConnected) return;
   try {
-    const data = await ghlFetch(`/contacts/${lead.ghlContactId}/notes/`);
+    const data = await ghlFetch(`/contacts/${lead.ghlContactId}/notes`);
     const notes = (data.notes || []).sort((a, b) => new Date(b.dateAdded) - new Date(a.dateAdded));
     if (notes.length > 0) {
       const latest = notes[0];
@@ -1345,7 +1348,8 @@ function updateStatus(id, status) { if (!status) return; updateLeadStatus(id, st
 async function triggerAppointmentFlow(lead) {
   logActivity(lead.id, 'Appointment Flow', `${lead.name} is ${lead.status} — appointment flow triggered`);
   if (lead.ghlContactId && ghlConnected) {
-    try { await ghlFetch('/notes/', { method: 'POST', body: JSON.stringify({ contactId: lead.ghlContactId, body: `[AUTO] Lead status: ${lead.status}. Ready for appointment. Category: ${lead.category}.` }) }); } catch {}
+    // GHL v2: notes are created under the contact path
+    try { await ghlFetch(`/contacts/${lead.ghlContactId}/notes`, { method: 'POST', body: JSON.stringify({ body: `[AUTO] Lead status: ${lead.status}. Ready for appointment. Category: ${lead.category}.`, userId: ghlConfig.locationId }) }); } catch {}
   }
   renderTable(); checkAppointmentAlerts();
 }
@@ -1362,7 +1366,8 @@ async function sendAppointmentLink(leadId) {
   updateLeadStatus(leadId, 'Appointment Requested', true);
   logActivity(leadId, 'Appointment Flow', `Booking link sent to ${lead.name}`);
   if (lead.ghlContactId && ghlConnected) {
-    try { await ghlFetch('/notes/', { method: 'POST', body: JSON.stringify({ contactId: lead.ghlContactId, body: `Appointment booking link sent: ${ghlConfig.calendarLink}` }) }); } catch {}
+    // GHL v2: notes are created under the contact path
+    try { await ghlFetch(`/contacts/${lead.ghlContactId}/notes`, { method: 'POST', body: JSON.stringify({ body: `Appointment booking link sent: ${ghlConfig.calendarLink}`, userId: ghlConfig.locationId }) }); } catch {}
   }
 }
 

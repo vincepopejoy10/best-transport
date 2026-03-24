@@ -19,7 +19,7 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const GHL_BASE = 'https://rest.gohighlevel.com/v1';
+const GHL_BASE = 'https://services.leadconnectorhq.com';
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
@@ -60,6 +60,7 @@ app.all('/api/ghl/*', async (req, res) => {
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      'Version': '2021-07-28',
     },
   };
 
@@ -94,5 +95,5 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`\n  Lead Pipeline CRM backend running`);
   console.log(`  Local:  http://localhost:${PORT}`);
-  console.log(`  Proxy:  http://localhost:${PORT}/api/ghl/*  →  ${GHL_BASE}/*\n`);
+  console.log(`  Proxy:  http://localhost:${PORT}/api/ghl/*  →  ${GHL_BASE}/* (v2)\n`);
 });

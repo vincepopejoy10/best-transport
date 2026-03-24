@@ -8,7 +8,7 @@
  * OR the frontend can pass it via the X-GHL-Api-Key header.
  */
 
-const GHL_BASE = 'https://rest.gohighlevel.com/v1';
+const GHL_BASE = 'https://services.leadconnectorhq.com';
 
 export default async function handler(req, res) {
   // ── CORS headers ─────────────────────────────────────────────────────────
@@ -43,6 +43,7 @@ export default async function handler(req, res) {
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      'Version': '2021-07-28',
     },
   };
 
